@@ -1,0 +1,35 @@
+{
+  "name": "log-all-lines-mcp",
+  "version": "1.0.0",
+  "description": "Babel code instrumentation for TypeScript files",
+  "main": "babel-instrument.js",
+  "scripts": {
+    "dev": "node babel-instrument.js app.ts",
+    "test:intercept": "node --require ./interceptor/register.js interceptor/test.js",
+    "dev:instrumented": "powershell -Command \"$env:NODE_OPTIONS='--require ./interceptor/register.js'; npm run dev\""
+  },
+  "keywords": [
+    "logging",
+    "instrumentation",
+    "typescript",
+    "babel"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@babel/cli": "^7.27.0",
+    "@babel/core": "^7.26.10",
+    "@babel/plugin-transform-typescript": "^7.27.0",
+    "@babel/preset-env": "^7.26.9",
+    "@babel/preset-typescript": "^7.27.0",
+    "@babel/register": "^7.25.9",
+    "@types/node": "^22.14.1",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@types/express": "^5.0.1",
+    "express": "^5.1.0",
+    "ws": "^8.18.1"
+  }
+}
