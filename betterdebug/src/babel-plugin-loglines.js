@@ -1,38 +1,10 @@
+// ! THIS BABEL PLUGIN WORKS WITH ANY PROJECT, THERE IS A WRAPPER SPECIFIC FOR EACH FRAMEWORK.
+// BUT ALL OF THEM USES THE SAME PLUGIN, IF JS/TS/TSX, IF VUE/SVELTE THEN NOT WORKING YET.
+
 const { declare } = require('@babel/helper-plugin-utils');
 const { types: t } = require('@babel/core');
-const { addNamed } = require('@babel/helper-module-imports'); // Use addNamed for named imports
 const path = require('path');
-
-// Helper to check if a node is loggable (basic statements)
-function isLoggableStatement(nodePath) {
-    const LOGGABLE_NODE_TYPES = [
-        'ExpressionStatement',
-        'VariableDeclaration',
-        'ReturnStatement',
-        'IfStatement',
-        'ForStatement',
-        'WhileStatement',
-        'DoWhileStatement',
-        'SwitchStatement',
-        'ThrowStatement',
-        'TryStatement',
-        // Maybe: 'BlockStatement' (could be noisy)
-    ];
-    return LOGGABLE_NODE_TYPES.includes(nodePath.node.type) && nodePath.isStatement();
-}
-
-// Function to calculate relative path
-function getRelativePath(fromFile, toFile) {
-    if (!fromFile) return null; // Cannot calculate if source file path is unknown
-    const fromDir = path.dirname(fromFile);
-    let relative = path.relative(fromDir, toFile);
-    // Ensure it starts with ./ or ../ for relative paths
-    if (!relative.startsWith('.')) {
-        relative = './' + relative;
-    }
-    // Normalize path separators for imports
-    return relative.replace(/\\/g, '/');
-}
+const fs = require('fs'); // Import fs
 
 // Function to create a serializable check function AST
 function createSerializableCheckFunctionAST() {
@@ -138,9 +110,26 @@ function createSendLogCall(state, nodePath, type, name, valueIdentifier, codeLin
         ))
     ]);
 
-    const call = t.expressionStatement(t.callExpression(t.identifier('_sendLog'), [logPayload]));
+    // Target the _sendLog function attached to the global state object
+    const sendLogCallee = t.memberExpression(
+        t.memberExpression(t.identifier('globalThis'), t.identifier('__betterdebug_logSenderState__')),
+        t.identifier('_sendLog')
+    );
+
+    const call = t.expressionStatement(t.callExpression(sendLogCallee, [logPayload]));
     call._generated = true; // Mark as generated
-    return call;
+
+    // Wrap the call in a check for the global state and function
+    const check = t.logicalExpression(
+        '&&',
+        t.memberExpression(t.identifier('globalThis'), t.identifier('__betterdebug_logSenderState__')),
+        sendLogCallee // Checks if globalThis.__betterdebug_logSenderState__._sendLog exists
+    );
+
+    const safeCall = t.ifStatement(check, t.blockStatement([call]));
+    safeCall._generated = true; // Mark the whole if statement as generated
+
+    return safeCall;
 }
 
 // Moved function visitor logic outside the main visitor object
@@ -187,12 +176,8 @@ function _FunctionVisitorHandler(nodePath, state, funcType, serializableCheckId)
         } else {
             const placeholderValue = t.stringLiteral(`[${paramPath.node.type}]`);
             const logStmt = createSendLogCall(state, paramPath, 'parameter', `${funcName}|param${index}`, placeholderValue, codeLine);
-            // We should mark this log statement as generated too
-            if (!t.isStatement(logStmt)) { // createSendLogCall returns ExpressionStatement
-                logStmt._generated = true;
-            } else { // It might return an IfStatement or other statement type
-                logStmt.expression._generated = true; // Mark the inner expression if needed
-            }
+            // Mark the generated IfStatement directly
+            logStmt._generated = true;
             logStatements.push(logStmt);
         }
     });
@@ -273,8 +258,35 @@ function isStaticLiteralStructure(nodePath) {
 module.exports = declare((api, options) => {
     api.assertVersion(7);
 
-    const loggerModulePath = path.resolve(__dirname, '../../src/lib/log-sender.ts');
-    const loggerImportSource = loggerModulePath.replace(/\.(ts|tsx|js|jsx)$/, '');
+    // --- Read log-sender.ts content --- 
+    let logSenderCode = '';
+    const logSenderPath = path.resolve(__dirname, '..', 'out', 'log-sender.js'); // Correct path relative to plugin
+    try {
+        logSenderCode = fs.readFileSync(logSenderPath, 'utf8');
+        console.log(`[log-values-plugin] Successfully read log-sender code from: ${logSenderPath}`);
+        console.log(`[log-values-plugin] logSenderCode: ${logSenderCode}`);
+    } catch (err) {
+        console.error(`[log-values-plugin] FATAL ERROR: Could not read log-sender.ts from ${logSenderPath}. Plugin disabled.`, err);
+        // Return an empty visitor object to effectively disable the plugin if the core code is missing
+        return { name: 'log-values-disabled' };
+    }
+    // Add config object before eval - necessary for log-sender initialization
+    // This assumes the wsPort and extensionPath are known at build time or passed via options
+    // TODO: Consider passing these via plugin options for flexibility
+    const wsPort = options.wsPort || 53117; // Default or from options
+    const extensionPath = (options.extensionPath || process.cwd()).replace(/\\/g, '/'); // Default or from options, normalize slashes
+    const configCode = `
+    if (typeof globalThis.betterdebug === 'undefined') { globalThis.betterdebug = {}; }
+    if (typeof globalThis.betterdebug.config === 'undefined') {
+      globalThis.betterdebug.config = { wsPort: ${wsPort}, extensionPath: "${extensionPath}" };
+    } else {
+      globalThis.betterdebug.config.wsPort = ${wsPort};
+      globalThis.betterdebug.config.extensionPath = "${extensionPath}";
+    }
+    `;
+    const finalCodeToEval = configCode + logSenderCode; // Restore config concatenation
+    // --- End Reading log-sender.ts ---
+
     const { serializableCheckId, serializableCheckDecl } = createSerializableCheckFunctionAST();
 
     return {
@@ -282,34 +294,43 @@ module.exports = declare((api, options) => {
         visitor: {
             Program: {
                 enter(programPath, state) {
-                    const currentFilePath = state.file.opts.filename;
+                    // No need to check logger module path anymore, as we eval everywhere
+                    // const currentFilePath = state.file.opts.filename;
+                    // if (currentFilePath && path.resolve(currentFilePath) === loggerModulePath) {
+                    //     state.file.set('isLoggerModule', true);
+                    //     return;
+                    // }
 
-                    // Skip logger module
-                    if (currentFilePath && path.resolve(currentFilePath) === loggerModulePath) {
-                        state.file.set('isLoggerModule', true);
+                    // Check if helpers and eval code have been injected
+                    if (state.file.get('loggerSetupDone')) {
                         return;
                     }
 
-                    if (!currentFilePath || state.file.get('loggerSetupDone')) {
-                        return;
-                    }
+                    // --- Inject log-sender code via eval --- 
+                    const logSenderCodeLiteral = t.stringLiteral(finalCodeToEval); // Use the code read from file
+                    const evalCall = t.callExpression(t.identifier('eval'), [logSenderCodeLiteral]);
+                    // Guard: Only eval if the global state hasn't been set up yet
+                    const evalCheck = t.ifStatement(
+                        t.binaryExpression(
+                            '===',
+                            t.unaryExpression('typeof', t.memberExpression(t.identifier('globalThis'), t.identifier('__betterdebug_logSenderState__'))),
+                            t.stringLiteral('undefined')
+                        ),
+                        t.blockStatement([t.expressionStatement(evalCall)])
+                    );
+                    evalCheck._generated = true; // Mark the node itself before injecting
+                    programPath.unshiftContainer('body', evalCheck);
+                    // --- End eval injection ---
 
-                    // Add _sendLog import
-                    const relativeImportPath = getRelativePath(currentFilePath, loggerImportSource);
-                    if (relativeImportPath) {
-                        addNamed(programPath, '_sendLog', relativeImportPath);
-                    } else {
-                        console.warn(`[log-values-plugin] Could not determine relative path to logger for file: ${currentFilePath}`);
-                        return; // Don't proceed if import fails
-                    }
+                    // Inject _typeof helper function
+                    const typeofHelperNode = createTypeofHelperAST();
+                    typeofHelperNode._generated = true; // Mark before injecting
+                    programPath.unshiftContainer('body', typeofHelperNode);
 
-                    // Insert _typeof helper function before serializable helper to ensure it's defined
-                    programPath.unshiftContainer('body', createTypeofHelperAST());
-                    programPath.node.body[0]._generated = true;
-
-                    // Add _isSerializable helper function
-                    programPath.unshiftContainer('body', serializableCheckDecl);
-                    programPath.node.body[0]._generated = true; // Mark helper as generated
+                    // Inject _isSerializable helper function
+                    const serializableHelperNode = serializableCheckDecl; // It's already a node
+                    serializableHelperNode._generated = true; // Mark before injecting
+                    programPath.unshiftContainer('body', serializableHelperNode);
 
                     state.file.set('loggerSetupDone', true);
                 }
@@ -490,72 +511,72 @@ module.exports = declare((api, options) => {
             // --- Log Async Operations ---
 
             // @NEXTJS USING SWC DOESNT TRIGGER THIS VISITOR.
-            AwaitExpression(nodePath, state) {
-                console.log(`[log-lines-plugin DEBUG] >>> ENTER AwaitExpression visitor for: ${state.file.opts.filename}`);
-                if (state.file.get('isLoggerModule')) {
-                    console.log(`[log-lines-plugin DEBUG] <<< EXIT AwaitExpression (isLoggerModule)`);
-                    return;
-                }
-                if (!nodePath.node.loc) {
-                    console.log(`[log-lines-plugin DEBUG] <<< EXIT AwaitExpression (no loc)`);
-                    return;
-                }
-                if (nodePath.node._generated) {
-                    console.log(`[log-lines-plugin DEBUG] <<< EXIT AwaitExpression (_generated node)`);
-                    return;
-                }
-                if (isInsideLogCall(nodePath)) {
-                    console.log(`[log-lines-plugin DEBUG] <<< EXIT AwaitExpression (inside _sendLog)`);
-                    return;
-                }
-                console.log(`[log-lines-plugin DEBUG] --- Processing AwaitExpression at line: ${nodePath.node.loc?.start?.line}`);
+            // AwaitExpression(nodePath, state) {
+            //     console.log(`[log-lines-plugin DEBUG] >>> ENTER AwaitExpression visitor for: ${state.file.opts.filename}`);
+            //     if (state.file.get('isLoggerModule')) {
+            //         console.log(`[log-lines-plugin DEBUG] <<< EXIT AwaitExpression (isLoggerModule)`);
+            //         return;
+            //     }
+            //     if (!nodePath.node.loc) {
+            //         console.log(`[log-lines-plugin DEBUG] <<< EXIT AwaitExpression (no loc)`);
+            //         return;
+            //     }
+            //     if (nodePath.node._generated) {
+            //         console.log(`[log-lines-plugin DEBUG] <<< EXIT AwaitExpression (_generated node)`);
+            //         return;
+            //     }
+            //     if (isInsideLogCall(nodePath)) {
+            //         console.log(`[log-lines-plugin DEBUG] <<< EXIT AwaitExpression (inside _sendLog)`);
+            //         return;
+            //     }
+            //     console.log(`[log-lines-plugin DEBUG] --- Processing AwaitExpression at line: ${nodePath.node.loc?.start?.line}`);
 
-                // Find the parent statement to insert before
-                const parentStmt = nodePath.getStatementParent();
-                if (!parentStmt) {
-                    console.log(`[log-lines-plugin DEBUG] <<< EXIT AwaitExpression (no parent statement found)`);
-                    return; // Should have a statement parent
-                }
+            //     // Find the parent statement to insert before
+            //     const parentStmt = nodePath.getStatementParent();
+            //     if (!parentStmt) {
+            //         console.log(`[log-lines-plugin DEBUG] <<< EXIT AwaitExpression (no parent statement found)`);
+            //         return; // Should have a statement parent
+            //     }
 
-                const codeLine = getCodeLine(nodePath, state);
-                const argument = nodePath.get('argument');
+            //     const codeLine = getCodeLine(nodePath, state);
+            //     const argument = nodePath.get('argument');
 
-                let expressionName = '[await expression]';
-                try {
-                    expressionName = argument.toString();
-                } catch (e) {
-                    console.log(`[log-lines-plugin DEBUG] Error getting await argument string: ${e.message}`);
-                }
-                console.log(`[log-lines-plugin DEBUG] Await Expression Name: ${expressionName}`);
+            //     let expressionName = '[await expression]';
+            //     try {
+            //         expressionName = argument.toString();
+            //     } catch (e) {
+            //         console.log(`[log-lines-plugin DEBUG] Error getting await argument string: ${e.message}`);
+            //     }
+            //     console.log(`[log-lines-plugin DEBUG] Await Expression Name: ${expressionName}`);
 
-                const promiseId = nodePath.scope.generateUidIdentifier("awaitedPromise");
+            //     const promiseId = nodePath.scope.generateUidIdentifier("awaitedPromise");
 
-                // Declare variable: const awaitedPromise = ...argument...
-                const promiseVarDecl = t.variableDeclaration('const', [
-                    t.variableDeclarator(promiseId, nodePath.node.argument)
-                ]);
-                promiseVarDecl._generated = true;
+            //     // Declare variable: const awaitedPromise = ...argument...
+            //     const promiseVarDecl = t.variableDeclaration('const', [
+            //         t.variableDeclarator(promiseId, nodePath.node.argument)
+            //     ]);
+            //     promiseVarDecl._generated = true;
 
-                // Log if serializable: if(_isSerializable(awaitedPromise)) _sendLog({ ..., type: 'async-await', name: expressionName, value: awaitedPromise, ... })
-                const logStmt = t.ifStatement(
-                    t.callExpression(serializableCheckId, [promiseId]),
-                    createSendLogCall(state, nodePath, 'async-await', expressionName, promiseId, codeLine),
-                );
-                logStmt._generated = true;
+            //     // Log if serializable: if(_isSerializable(awaitedPromise)) _sendLog({ ..., type: 'async-await', name: expressionName, value: awaitedPromise, ... })
+            //     const logStmt = t.ifStatement(
+            //         t.callExpression(serializableCheckId, [promiseId]),
+            //         createSendLogCall(state, nodePath, 'async-await', expressionName, promiseId, codeLine),
+            //     );
+            //     logStmt._generated = true;
 
-                // Replace original argument: await awaitedPromise;
-                nodePath.node.argument = t.identifier(promiseId.name);
+            //     // Replace original argument: await awaitedPromise;
+            //     nodePath.node.argument = t.identifier(promiseId.name);
 
-                console.log(`[log-lines-plugin DEBUG] --- Attempting to insert await log before statement at line ${parentStmt.node.loc?.start?.line}`);
-                try {
-                    // Insert before the statement containing the await
-                    parentStmt.insertBefore([promiseVarDecl, logStmt]);
-                    console.log(`[log-lines-plugin DEBUG] --- Successfully inserted await log`);
-                } catch (e) {
-                    console.error(`[log-values-plugin] Error inserting await log: ${e.message} at ${state.file.opts.filename}:${parentStmt.node.loc?.start?.line}`);
-                }
-                console.log(`[log-lines-plugin DEBUG] <<< EXIT AwaitExpression (processed)`);
-            },
+            //     console.log(`[log-lines-plugin DEBUG] --- Attempting to insert await log before statement at line ${parentStmt.node.loc?.start?.line}`);
+            //     try {
+            //         // Insert before the statement containing the await
+            //         parentStmt.insertBefore([promiseVarDecl, logStmt]);
+            //         console.log(`[log-lines-plugin DEBUG] --- Successfully inserted await log`);
+            //     } catch (e) {
+            //         console.error(`[log-values-plugin] Error inserting await log: ${e.message} at ${state.file.opts.filename}:${parentStmt.node.loc?.start?.line}`);
+            //     }
+            //     console.log(`[log-lines-plugin DEBUG] <<< EXIT AwaitExpression (processed)`);
+            // },
 
             // ALTERNATIVA: detect if next code LINE has await or .then ai manda log.tr 
 

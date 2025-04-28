@@ -7,6 +7,8 @@ function TestPage() {
     const [users, setUsers] = useState<{ id: number; name: string; randomNumber: number }[]>([]);
     const [loading, isLoading] = useState(false);
 
+    console.log("OPA FROM")
+
     // This useEffect hook runs only on the client-side after the component mounts
     useEffect(() => {
         console.log('[Test Page - Browser] Component did mount.'); // Standard log
@@ -28,6 +30,7 @@ function TestPage() {
                 isLoading(false);
             }
         }
+
 
         fetchUsers();
     }, []);

@@ -1,8 +1,8 @@
 {
-  "name": "mock-function-run-ai",
-  "displayName": "Run Function Button & Mock AI (JavaScript/TypeScript)",
-  "description": "Run JavaScript/TypeScript functions with Quokka and generate realistic mock data using OpenAI",
-  "version": "1.1.2",
+  "name": "betterdebug",
+  "displayName": "Better Debug [DEV]",
+  "description": "View logs inline without going to browser, similar to console ninja",
+  "version": "0.2.0",
   "publisher": "erickluis",
   "engines": {
     "vscode": "^1.96.2"
@@ -10,9 +10,10 @@
   "icon": "icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ErickLuis00/ts-function-run-mock-ai"
+    "url": "https://github.com/ErickLuis00/betterdebug"
   },
   "categories": [
+    "Debuggers",
     "Other"
   ],
   "activationEvents": [
@@ -23,71 +24,40 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "function-run.runFunction",
-        "title": "Run Function with Quokka"
-      },
-      {
-        "command": "function-run.setOpenAIApiKey",
-        "title": "Set OpenAI API Key for Function Run"
-      }
-    ],
     "configuration": {
-      "title": "Function Run",
+      "title": "Better Debug",
       "properties": {
-        "function-run.enableCodeLens": {
+        "betterdebug.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable/disable the CodeLens for running functions"
-        },
-        "function-run.useMockData": {
-          "type": "boolean",
-          "default": true,
-          "description": "Use realistic mock data for function parameters based on field names"
-        },
-        "function-run.openaiApiKey": {
-          "type": "string",
-          "default": "",
-          "description": "OpenAI API key for generating function calls (not recommended to set here, use the command instead for secure storage)"
+          "description": "Enable/disable Better Debug inline logging"
         }
       }
-    },
-    "menus": {
-      "commandPalette": [
-        {
-          "command": "function-run.setOpenAIApiKey",
-          "group": "Function Run"
-        }
-      ]
     }
   },
   "scripts": {
-    "vscode:prepublish": "pnpm run esbuild-base -- --production",
-    "esbuild-base": "node ./build.js",
-    "esbuild": "pnpm run esbuild-base -- --sourcemap",
-    "esbuild-watch": "pnpm run esbuild-base -- --sourcemap --watch",
-    "compile": "pnpm run esbuild",
-    "watch": "pnpm run esbuild-watch",
-    "pretest": "pnpm run compile && pnpm run lint",
-    "lint": "eslint src",
-    "test": "vscode-test"
-  },
-  "dependencies": {
-    "@types/ws": "^8.18.1",
-    "openai": "^4.95.1",
-    "ws": "^8.18.1"
+    "build": "node ./build.js",
+    "package": "pnpm run build && vsce package",
+    "publish": "vsce publish",
+    "version": "npm version minor",
+    "SE_DAR_PROBLEMA_NO_PACKAGE_DE_LIBS_REMOVE_TUDO_DO_DEVEPENDENCIES_DEIXA_SÓ_DEV_DEPENDENCIES": ""
   },
   "devDependencies": {
+    "@babel/helper-module-imports": "^7.25.9",
+    "@babel/helper-plugin-utils": "^7.26.5",
     "@types/mocha": "^10.0.10",
     "@types/node": "20.x",
     "@types/vscode": "^1.96.2",
+    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.28.0",
     "@typescript-eslint/parser": "^8.28.0",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.4.1",
+    "babel-loader": "^10.0.0",
     "esbuild": "0.25.2",
     "eslint": "^9.23.0",
-    "typescript": "^5.8.2"
+    "openai": "^4.95.1",
+    "typescript": "^5.8.2",
+    "ws": "^8.18.1"
   }
 }
